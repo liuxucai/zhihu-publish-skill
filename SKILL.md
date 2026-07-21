@@ -1,167 +1,167 @@
 ---
 name: zhihu-publisher
 description: |
-  知乎文章自动发布技能。通过 xbrowser 控制 Chrome 浏览器完成知乎登录、撰写和发布文章的全流程。
+  知乎文章自动发布技能。通过隔离 Chrome（isolated-browser skill 拉起）+ agent-browser CLI（CDP 9222）控制 Chrome 完成知乎登录、撰写和发布文章的全流程。
   触发词：发布知乎、知乎文章、zhihu publish、发知乎文章、知乎发文章。
-  依赖：xbrowser skill（--browser chrome）。
+  依赖：isolated-browser skill（未装则从 https://github.com/liuxucai/isolated-browser-skill 安装）。
 ---
 
 # 知乎文章自动发布
 
-## 依赖
+## 依赖与环境
 
-- xbrowser skill，xb 路径：`D:\QClaw\resources\openclaw\config\skills\xbrowser\scripts\xb.cjs`
-- Chrome 浏览器（`--browser chrome`），**禁止使用 cft/edge**（ref 失效 bug）
+- **浏览器**：通过 `isolated-browser` skill 拉起隔离 Chrome（默认 CDP 端口 9222）。未装该 skill 时从 https://github.com/liuxucai/isolated-browser-skill 安装。
+- **驱动 CLI**：`agent-browser`，本机路径 `C:\Users\菠萝\AppData\Roaming\QClaw\npm-global\agent-browser.cmd`（下文以变量 `$AB` 指代，命令统一加 `--cdp 9222`）。
+- **登录态**：隔离 Chrome 首次需用户手动登录知乎；登录态由隔离浏览器保管，重开复用。
+
+```powershell
+$AB = "C:\Users\菠萝\AppData\Roaming\QClaw\npm-global\agent-browser.cmd"
+```
 
 ## 文章要求
 
-- 目标字数：**1500 字**（含标点），下限 1200，上限 1800
+- 目标字数：**1500 字**（含标点），下限 1200，上限 1800。
+- 正文用**纯文本分段**（段落间空行），不要用 Markdown `#` 标记——见下方「核心坑」。
 
 ## 流程一：登录（仅需一次）
 
 ### 1. 打开登录页
-```bash
-node xb.cjs run --browser chrome --headed open https://www.zhihu.com/signin
+```powershell
+& $AB --cdp 9222 open https://www.zhihu.com/signin
 ```
 
-### 2. 切换密码登录
-```bash
-node xb.cjs run --browser chrome -- find role button click --name 密码登录
+### 2. 切密码登录 + 取 ref + 填凭据
+```powershell
+& $AB --cdp 9222 find role button click --name 密码登录
+& $AB --cdp 9222 snapshot -i        # 记录账号/密码 textbox、登录按钮的 ref
+& $AB --cdp 9222 fill @<账号ref> <账号>
+& $AB --cdp 9222 fill @<密码ref> <密码>
+& $AB --cdp 9222 click @<登录ref>
 ```
+> ⚠️ 账号密码通过用户输入获取，**禁止写死到文件中**。触发滑块验证时 URL 停留 `/signin`，需用户手动拖动。
 
-### 3. 获取 ref 并填写凭据
-```bash
-node xb.cjs run --browser chrome -- batch --bail "wait --load networkidle" "snapshot -i"
-```
-记录 textbox ref（通常账号 `@e39`、密码 `@e40`、登录按钮 `@e12`），然后：
-```bash
-node xb.cjs run --browser chrome -- batch --bail "fill @e39 <账号>" "fill @e40 <密码>" "click @e12"
-```
-> ⚠️ 账号密码通过用户输入获取，**禁止写死到文件中**。
-
-### 4. 验证
-- 如触发滑块验证码：URL 停留 `/signin`，需用户**手动拖动滑块**完成验证
-- 登录成功：URL 变为 `https://www.zhihu.com/`
+### 3. 验证
+登录成功：URL 变为 `https://www.zhihu.com/`。
 
 ## 流程二：发布文章
 
 ### 1. 打开编辑器
-```bash
-node xb.cjs run --browser chrome --headed open https://zhuanlan.zhihu.com/write
-node xb.cjs run --browser chrome -- batch --bail "wait --load networkidle" "snapshot -i"
+```powershell
+& $AB --cdp 9222 open https://zhuanlan.zhihu.com/write
+& $AB --cdp 9222 wait --load networkidle
+& $AB --cdp 9222 snapshot -i
 ```
 
 ### 2. 填标题
-```bash
-node xb.cjs run --browser chrome -- batch --bail "click @e25" "fill @e25 <标题>"
+```powershell
+& $AB --cdp 9222 click @<标题ref>      # 通常 e25/e27，以 snapshot 为准
+& $AB --cdp 9222 fill @<标题ref> <标题>
 ```
 
-### 3. 填正文（长文本用 JS 插入）
-> ❌ 直接 `fill` 长文本（>500字符）会被命令行截断；`fill` 中的 `\n` 会变成普通字符。
->
-> ❌ 多次 `eval execCommand('insertText')` 分段插入会导致重复内容（前一次插入的文本不会自动清除，再次执行时追加在现有内容末尾）。
->
-> ✅ **推荐：用 eval 一次性通过 base64 解码后插入**，一次写入完整正文，避免重复。
+### 3. 填正文（✅ 唯一可靠方法：分段 keyboard type + 真实 Enter）
 
-#### 方案 A（推荐）：base64 解码一次性插入
+> **为什么不用别的**：知乎专栏正文是 **DraftJS 编辑器**（`.public-DraftEditor-content`）。
+> - ❌ `fill` / `execCommand('insertText')` / base64 一次性注入：只改 DOM、不更新 React state → 字数恒为 0 → 发布按钮 disabled。
+> - ❌ `clipboard write` + `paste`：长文本触发 CDP 超时（os 10060），paste 写不进去。
+> - ❌ 整篇 `keyboard type <含\n文本>`：把 `\n` 当分隔符，只打进第一段（约 35 字）。
+> - ✅ **分段 `keyboard type`（每段不含换行）+ 段间真实 `press Enter`**：真实逐字符输入必触发 DraftJS `onChange`，state 同步、字数正常。
 
-先在本地生成 base64 编码的文章正文：
-```bash
-# PowerShell
-$article = @"
-# 第1部分标题
-
-正文内容...
-
-## 第2部分标题
-
-更多正文内容...
-"@
-$b64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($article))
-```
-
-然后通过 eval 在浏览器端解码并插入编辑器：
-```bash
-node xb.cjs run --browser chrome -- eval "
-  var ed = document.querySelector('.DraftEditor-root [contenteditable=true]');
-  if(!ed) ed = document.querySelector('[role=textbox]');
-  ed.focus();
-  var text = atob('<base64编码的正文>');
-  // 替换编辑器现有内容
-  ed.innerHTML = text.replace(/\n/g, '<br>');
-  document.execCommand('selectAll', false, null);
-  document.execCommand('insertText', false, text);
-"
-```
-> ⚠️ base64 编码要用 `[Convert]::ToBase64String` 做 UTF-8 base64，浏览器端用 `atob()` 解码。atob 对中文 base64 解码后再 `execCommand('insertText')` 即可正确渲染。
-
-#### 方案 B（备用）：逐段 eval 插入
-> 仅在正文较短（<1500 字符）时使用。单次 eval 命令中写入完整段落，不要多次调用。
-
-```bash
-node xb.cjs run --browser chrome -- eval "
-  document.querySelector('.DraftEditor-root [role=textbox]').focus();
-  document.execCommand('insertText', false, '第1段...');
-  document.execCommand('insertText', false, '\n\n## 标题');
-  document.execCommand('insertText', false, '\n\n第2段...');
-"
-```
-
-### 4. 智能排版
-```bash
-node xb.cjs run --browser chrome -- batch --bail "snapshot -i" "click @e48"
-```
-> `@e48` 为创作助手面板中的「智能排版」按钮（name 含"智能排版自动修正空格"），实际 ref 以 snapshot 为准。
-
-### 5. 发布
-```bash
-node xb.cjs run --browser chrome -- batch --bail "snapshot -i" "click @e37" "wait --load networkidle"
-```
-成功标志：URL 变为 `https://zhuanlan.zhihu.com/p/<ID>`，出现发布成功弹窗。
-
-### 6. 处理翻译模态框干扰
-> 编辑器页面打开后，可能会在右下角自动弹出「翻译」模态框，遮盖下方的发布按钮。
-
-**不要尝试点击关闭按钮**（@e29, @e20 等经常无效或反复弹出）。**推荐用 eval 直接移除 DOM 元素**：
-
-```bash
-# 方式一：直接移除模态框 DOM（推荐）
-node xb.cjs run --browser chrome -- eval "document.querySelectorAll('.Modal-wrapper,.Modal-backdrop').forEach(function(e){e.remove()});document.body.style.overflow='';document.body.style.pointerEvents='';'modal-closed'"
-```
-> ⚠️ PowerShell 中对 eval 传入含 `()` 和 `=>` 的 JS 代码会报语法错误，因为 `()` 被 PowerShell 解释为命令调用。
-> **解决方案**：用 `function(){}` 替代箭头函数，或者将 eval 代码写入临时 .ps1 文件执行。
-
-#### PowerShell 转义问题总结
-
-| 问题 | 原因 | 解决方案 |
-|------|------|----------|
-| `( )` 解析错误 | PowerShell 将括号视为方法调用起始 | 用 `` `() `` 反引号转义，或用 `function` 替代箭头，或写入临时脚本文件 |
-| `=>` 箭头函数报错 | PowerShell 将 `>` 视为重定向 | 用 `function(e){}` 替代 `e=>{}` |
-| 引号嵌套冲突 | 外层双引号与内层单引号的转义链 | 用临时 .ps1 文件 + 变量传递，完全绕过命令行解析 |
-| eval 代码含中文 | xb CLI 传递的是 UTF-8 但 PowerShell 解析时可能乱码 | 也用临时脚本文件解决 |
-
-**推荐做法**：当 eval 代码较长或含特殊字符时，写入临时 .ps1：
+**推荐用 skill 自带脚本**（已封装上述逻辑，自包含、无需外部文件）：
 
 ```powershell
-# write-eval.ps1
-$evalCode = @"
-document.querySelectorAll('.Modal-wrapper,.Modal-backdrop').forEach(function(e){e.remove()});
-document.body.style.overflow='';
-'modal-closed'
-"@
-node $xb run --browser chrome -- eval $evalCode
+$AB = "C:\Users\菠萝\AppData\Roaming\QClaw\npm-global\agent-browser.cmd"
+# 正文模板见 skill 内 templates/zhihu_body_plain.md（纯文本、按空行分段、无 # 标记）
+python3 E:\skills\zhihu-publisher\scripts\zhihu_publish.py `
+  --title "<标题>" `
+  --body E:\skills\zhihu-publisher\templates\zhihu_body_plain.md `
+  --ab $AB --cdp 9222
 ```
+> 脚本会：① 单独填标题框；② 清空正文；③ 按空行分段 `keyboard type` + 段间真实 `Enter` 输入正文；④ 输出 `CHECK:` 含正文 `innerText` 字数与发布按钮状态。
+>
+> 想自定义文章：复制 `templates/zhihu_body_plain.md` 改内容（**首行放标题、空行、再写正文；正文勿用 `#` Markdown 标记**），把路径传给 `--body`。
+
+**或手写最小步骤**（理解原理用）：
+
+```python
+import subprocess, time, pathlib
+AB = r"C:\Users\菠萝\AppData\Roaming\QClaw\npm-global\agent-browser.cmd"
+PORT = "9222"
+def ab(args, t=40000):
+    r = subprocess.run([AB, "--cdp", PORT, *args], capture_output=True,
+                       timeout=t, shell=True, encoding="utf-8", errors="replace")
+    return r.stdout.strip(), r.stderr.strip(), r.returncode
+
+plain = pathlib.Path(r"E:\skills\zhihu-publisher\templates\zhihu_body_plain.md").read_text(encoding="utf-8")
+paras = [p for p in plain.split("\n\n") if p.strip()]
+body = paras[1:]   # 跳过首段（标题已在标题框，勿重复）
+
+# 清空正文
+js_clear = ("var ed=document.querySelector('.DraftEditor-root [contenteditable=true]')"
+            "||document.querySelector('[role=textbox]')"
+            "||document.querySelector('div[contenteditable=true]');"
+            "ed.focus();document.execCommand('selectAll',false,null);"
+            "document.execCommand('delete',false,null);'cleared';")
+ab(["eval", js_clear], 20000)
+
+# 逐段真实输入（每段不含换行），段间真实回车
+for i, para in enumerate(body):
+    ab(["keyboard", "type", para], 40000)
+    if i < len(body) - 1:
+        ab(["press", "Enter"], 10000)
+    time.sleep(0.4)
+
+# 校验：正文 innerText 字数应≈正文长度；发布按钮应 enabled
+js_chk = ("var ce=document.querySelector('.DraftEditor-root [contenteditable=true]')"
+          "||document.querySelector('[role=textbox]');"
+          "var pubs=[...document.querySelectorAll('button')].filter(b=>(b.textContent||'').trim()==='发布');"
+          "JSON.stringify({len:(ce?ce.innerText:'').length,"
+          "pubDisabled:pubs.length?pubs[0].disabled:null});")
+ab(["eval", js_chk], 20000)
+```
+
+> ⚠️ **字数可信判据 = 正文 `innerText.length`**，不是发布按钮颜色 / `disabled` / `pubDisabled`（按钮一旦收到过任意 input 事件就会切到 enabled 并保持，即使内容后来丢失）。
+
+### 4. 智能排版（可选）
+```powershell
+& $AB --cdp 9222 snapshot -i          # 找「智能排版」按钮 ref
+& $AB --cdp 9222 click @<智能排版ref>
+```
+
+### 5. 发布
+```powershell
+& $AB --cdp 9222 snapshot -i          # 找「发布」按钮 ref（通常 e38）
+& $AB --cdp 9222 click @<发布ref>
+& $AB --cdp 9222 wait --load networkidle
+```
+成功标志：URL 变为 `https://zhuanlan.zhihu.com/p/<ID>`，出现「发布成功 感谢你的第 N 篇创作」弹窗。
+
+> 本账号实测封面未强制拦截即可发布；若需规范封面，发布前用创作助手「AI 配图」或上传本地图先设封面。
 
 ## 核心规则
 
 | 规则 | 说明 |
 |------|------|
-| ref 必须每次刷新 | 每步操作前 `snapshot -i`，ref 只在同一 batch 内有效 |
-| 禁止跨 batch 用 ref | batch 之间 ref 编号会重新生成 |
-| 长文本用 base64 一次性插入 | 推荐用 base64 编码 + `atob()` 解码一次性写入，避免多次 `execCommand('insertText')` 导致内容重复 |
-| 避免多次 eval insertText | 多次调用会在当前内容末尾追加，导致同一段内容重复出现 |
-| 正文后必须排版 | 插入完成后点击「智能排版」修复换行和标点 |
-| 翻译模态框要移除而非关闭 | 用 `eval` 移除 `.Modal-wrapper` DOM 元素，点击关闭按钮通常无效 |
-| 全程用 chrome | cft/edge 有 ref 失效 bug，`--browser chrome` 是唯一可靠选项 |
-| PowerShell eval 要转义 | `()`、`=>`、引号嵌套用临时脚本文件解决，避免直接在命令行拼 JS |
-| 确认发布成功 | snapshot 中 URL 从 `/edit` 变为 `/p/<ID>`，出现文章详情页的评论/收藏/分享按钮 |
+| 正文必用分段 keyboard type + 真实 Enter | DraftJS 编辑器，禁用 `fill` / `execCommand('insertText')` / base64 一次性注入（字数恒 0） |
+| 正文用纯文本分段，勿用 `#` Markdown 标记 | `#` 会触发「Markdown 语法输入中」待转换态，字数不统计 |
+| ref 每次刷新 | 每步前 `snapshot -i`，ref 只在同一会话内有效 |
+| 字数判据 = `innerText.length` | 不以按钮颜色 / disabled 为准 |
+| 长操作拆段 + 重试 | 绕过 CDP 偶发超时（os 10060）；单段 < 400 字 |
+| 发布前截图确认无浮层 | 右下角评分/满意度弹窗会遮挡发布按钮，先用 eval 点掉或等其消失 |
+| 用 snapshot ref 点击，别用坐标 | agent-browser eval 返回的 JSON 常被转义包装，直接解析易错 |
+| PowerShell 长 JS / 长中文用 .py 脚本 | 避开管道 GBK 编码损坏与多行 `node -e` 吞输出 |
+
+## 附录：踩坑与解决清单（实践记录）
+
+1. **skillhub install 失败** → 改用 `git clone` 手动装到 `skills/zhihu-publisher/`。
+2. **SKILL.md 硬编码非本机路径** → 统一改为本机 `agent-browser` + CDP 9222 引用规格。
+3. **git clone 报错 + PowerShell GBK 损坏文件** → 用 Python `utf-8` 读写绕开。
+4. **base64 一次性插入 Markdown 正文 → 字数 0** → 去掉 `#` 标记，改纯文本。
+5. **`execCommand('insertText')` 只改 DOM、不更新 React state（字数恒 0）** → DraftJS 不触发 onChange，禁用。
+6. **`clipboard write` 超时（10060）→ paste 失效** → 长文本 CDP 不稳，弃用。
+7. **`keyboard type` 整篇被 `\n` 截断到 35 字** → type 不处理换行，弃用整篇。
+8. **✅ 分段 `keyboard type` + 真实 `Enter`** → 正文完整进入、字数正常、发布启用（最终方案）。
+9. **右下角评分弹窗遮挡发布按钮** → eval 点掉 / 等其消失，发布前截图确认。
+10. **「视觉蓝色但 DOM disabled」误判** → 以 `innerText.length` 实际字数为准。
+11. **点击发布要求封面（coverRequired）** → 本账号未强制，直接发布；需规范先设封面。
+12. **agent-browser eval 返回 JSON 被转义包装** → 改用 `snapshot -i` 取 ref 再 `click @ref`。
+13. **CDP 偶发超时（10060）** → 长操作拆 <400 字/段 + 段间 sleep + 失败重试 + 写独立 `.py` 跑。
