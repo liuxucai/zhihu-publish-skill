@@ -1,0 +1,6 @@
+{
+  "name": "zhihu-auto-publish",
+  "version": "1.0.0",
+  "author": "liuxc",
+  "description": "自动发布知乎文章，需手工登录账号"
+}
