@@ -1,6 +1,6 @@
 {
   "name": "zhihu-auto-publish",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "author": "liuxc",
-  "description": "自动发布知乎文章，需手工登录账号"
+  "description": "自动发布知乎文章（playwright-core 直连隔离 Chrome，CDP 9222）：填标题、逐段填正文、插入配图、发布或更新已发布文章；需手工登录账号一次"
 }
