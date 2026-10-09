@@ -5,7 +5,7 @@
 | 依赖 | 版本/位置 | 说明 |
 |---|---|---|
 | 隔离 Chrome | `~/.workbuddy/skills/isolated-browser/scripts/launch.js` | 固定 profile `~/.chrome_qclaw_stable`（知乎登录态已持久化）；CDP 端口默认 9222 |
-| Node.js | 22+（本机 `~/.workbuddy/binaries/node/versions/22.22.2-3/node.exe`） | 运行 `scripts/*.js` |
+| Node.js | 22+（本机 `~/.workbuddy/binaries/node/versions/<ver>/node.exe`） | 运行 `scripts/*.js` |
 | playwright-core | `~/.workbuddy/binaries/node/workspace/node_modules/playwright-core` | 驱动层；脚本按 `OPENCLAW_NODE_MODULES` → 本机默认路径 → 全局 顺序查找 |
 
 **已弃用（不要再用）**：agent-browser CLI（`agent-browser.cmd`）与其封装的两个 Python 脚本
@@ -14,11 +14,11 @@
 
 ```bash
 # 环境变量（每个新 shell 都要设）
-export OPENCLAW_NODE_MODULES="C:/Users/<user>/.workbuddy/binaries/node/workspace/node_modules"
+export OPENCLAW_NODE_MODULES="$HOME/.workbuddy/binaries/node/workspace/node_modules"
 export ISOB_CDP_PORT=9222                       # 可选，默认即 9222
 
 # 后台常驻拉起隔离 Chrome（必须后台 + sleep 保活，否则被沙箱回收）
-node "C:/Users/<user>/.workbuddy/skills/isolated-browser/scripts/launch.js" \
+node "$HOME/.workbuddy/skills/isolated-browser/scripts/launch.js" \
      "https://www.zhihu.com/" && sleep 7200
 ```
 

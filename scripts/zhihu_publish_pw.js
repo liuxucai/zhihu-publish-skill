@@ -23,9 +23,10 @@
  *   --cdp <port>         CDP 端口（默认 9222 或环境变量 ISOB_CDP_PORT）
  *   --restore-ms <ms>    进入编辑器后等待草稿恢复的时间（默认 4000，勿调小）
  *
- * 环境变量：
+ * 环境变量（都可选，不设也能跑）：
  *   OPENCLAW_NODE_MODULES  含 playwright-core 的 node_modules 目录
- *                          （本机：C:/Users/<user>/.workbuddy/binaries/node/workspace/node_modules）
+ *   不设时由 ../../isolated-browser/scripts/pathkit.js 运行时自动探测
+ *   （WorkBuddy 托管 node → OpenClaw/qclaw 安装目录 → 就近 node_modules）
  *
  * 前置：隔离 Chrome 已拉起（isolated-browser/scripts/launch.js），知乎登录态有效。
  */
@@ -63,6 +64,12 @@ function parseArgs(argv) {
 }
 
 function loadPlaywright() {
+  // 首选：公共解析器（不写死用户名 / 盘符 / 版本号）
+  try {
+    return require(path.resolve(__dirname, "..", "..", "isolated-browser", "scripts", "pathkit.js")).resolvePlaywright();
+  } catch (e) {
+    /* 解析器不可用时回退到本地探测 */
+  }
   const home = process.env.USERPROFILE || process.env.HOME || "";
   const cands = [
     process.env.OPENCLAW_NODE_MODULES,

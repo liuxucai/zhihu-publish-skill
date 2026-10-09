@@ -20,16 +20,16 @@ description: |
 |---|---|---|
 | 隔离 Chrome | `~/.workbuddy/skills/isolated-browser/scripts/launch.js` | 固定 profile `~/.chrome_qclaw_stable`，知乎登录态已持久化 |
 | CDP 端口 | `9222` | 环境变量 `ISOB_CDP_PORT` 可覆盖 |
-| 驱动层 | `playwright-core`（`~/.workbuddy/binaries/node/workspace/node_modules`） | 环境变量 `OPENCLAW_NODE_MODULES` 指向该目录 |
-| Node | 22+ | 本机 `~/.workbuddy/binaries/node/versions/22.22.2-3/node.exe` |
+| 驱动层 | `playwright-core` | 由 `isolated-browser/scripts/pathkit.js` 运行时自动探测；要强制指定时设 `OPENCLAW_NODE_MODULES` |
+| Node | 22+ | 本机 `~/.workbuddy/binaries/node/versions/<ver>/node.exe` |
 
 ```bash
 # 1) 后台常驻拉起隔离 Chrome —— 必须 run_in_background，且带 sleep 保活
 #    （沙箱会在命令结束时回收 detached 子进程，前台调用会导致 Chrome 立刻被杀）
-node "C:/Users/<user>/.workbuddy/skills/isolated-browser/scripts/launch.js" "https://www.zhihu.com/" && sleep 7200
+node "$HOME/.workbuddy/skills/isolated-browser/scripts/launch.js" "https://www.zhihu.com/" && sleep 7200
 
-# 2) 给驱动脚本设置环境变量（每个新 shell 都要设）
-export OPENCLAW_NODE_MODULES="C:/Users/<user>/.workbuddy/binaries/node/workspace/node_modules"
+# 2) playwright-core 由脚本自动探测，无需设置任何环境变量
+#    （确有需要时才用 OPENCLAW_NODE_MODULES 强制指定）
 ```
 
 > ⚠️ **路径风格**：git-bash 下调用 node 一律用 `C:/Users/...` 风格路径；
@@ -51,11 +51,10 @@ export OPENCLAW_NODE_MODULES="C:/Users/<user>/.workbuddy/binaries/node/workspace
 ## 四、流程二：发布文章（一条命令）
 
 ```bash
-export OPENCLAW_NODE_MODULES="C:/Users/<user>/.workbuddy/binaries/node/workspace/node_modules"
 node scripts/zhihu_publish_pw.js \
   --title "文章标题" \
   --body  templates/body_plain.txt \      # 纯正文，段间空行，不含标题
-  --image "D:/skills/car/11.jpg" \        # 可选：正文配图
+  --image "<配图路径>" \                   # 可选：正文配图
   --image-at 5 \                          # 可选：插在第 5 段之后；省略则插在中间(段数//2)
   --publish                               # 不带则只填稿、停在发布前，供人工确认截图
 ```
