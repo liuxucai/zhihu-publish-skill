@@ -54,8 +54,9 @@ node "$HOME/.workbuddy/skills/isolated-browser/scripts/launch.js" "https://www.z
 node scripts/zhihu_publish_pw.js \
   --title "文章标题" \
   --body  templates/body_plain.txt \      # 纯正文，段间空行，不含标题
-  --image "<配图路径>" \                   # 可选：正文配图
-  --image-at 5 \                          # 可选：插在第 5 段之后；省略则插在中间(段数//2)
+  --keyword "婚车租车" --tags "婚庆用车,婚庆婚车车队" \  # 配图默认 3 张（按标签从素材库自动挑）
+  # 手动指定多张：--image a.jpg --image b.jpg --image c.jpg（覆盖自动挑选）
+  # 其他：--image-top N 改张数 | --no-image 不配图 | --image-layout group（连续插在同一处，默认 spread 均分）
   --publish                               # 不带则只填稿、停在发布前，供人工确认截图
 ```
 
@@ -65,8 +66,10 @@ node scripts/zhihu_publish_pw.js \
 3. 填标题：标题框 `fill("")` + `keyboard.type(title, {delay:15})`。
 4. 逐段输入正文：**每段先 `editor.focus()`，再 `keyboard.type(para, {delay:10})`，段间 `press("Enter")`**。
 5. 校验：逐块 dump 前 8 个字比对顺序、`innerText.length` 校验字数。
-6. 插图（若指定）：Range 定位第 N 段末尾 → `End` + `Enter` → 点工具栏「图片」→
-   `setInputFiles` 到 `input[accept='image/*']` → 等缩略图 + **额外等 3s** → 点「插入图片」→ 校验正文 `img` 数。
+6. 插图（若指定）：**先把正文全部输完**，再按锚点**倒序**逐张插图——
+   `insertAtSlot(N)` 用 DOM Range 主动把 selection 设到第 N 块末尾（图片插入后光标会漂移，不能沿用上次光标）→
+   `End` + `Enter` 造空段 → 点工具栏「图片」→ `setInputFiles` 到 `input[accept='image/*']` →
+   等缩略图 + **额外等 3s** → 点「插入图片」→ 逐张校验正文 `img` 数递增。
 7. 截图到 `--preview`（默认 `<脚本目录>/zhihu_preview.png`）。
 8. `--publish` 时点「发布」（含二次确认弹窗），`waitForURL(/zhuanlan\.zhihu\.com\/p\/\d+/)`。
 
@@ -92,6 +95,19 @@ node scripts/zhihu_probe.js            # 默认检查当前 zhuanlan 页面
 node scripts/zhihu_probe.js --edit-url "https://zhuanlan.zhihu.com/p/<ID>/edit"
 ```
 输出：URL、`bodyLen`、`titleLen`、`imgCount`、各段块顺序（前 8 字）、按钮文案列表。排查“到底填进去没有”时先跑它。
+
+## 封面设置（2026-10-13 实测，可给已发布文章补设）
+
+知乎文章封面（推荐流展示 / 分享 og:image）是**独立字段，不会自动取正文第一张图**；不设置时分享卡可能落到默认图。设置步骤（已发布文章同样适用）：
+
+1. 打开编辑页（新文章 `/write`；已发布走 `--edit-url .../p/<id>/edit`）。
+2. 点可见的 label「**添加封面**」（`.WriteCoverV2` 区，宽约 110px）。
+3. `setInputFiles` 到 **`input.UploadPicture-input`**（accept `.jpeg,.jpg,.png`，**单选**；
+   页面还有附件/正文图片两个 file input，别选错）。
+4. 上传后**无确认/裁剪弹窗**，封面缩略图直接出现在「发布设置 → 添加封面」处；点「发布 / 更新」提交。
+5. 核验：公开页 `<meta property="og:image">` 应变为刚上传的图（`zhimg.com/v2-…`）。
+
+实测：2026-10-13 给 `p/2093043735680632461` 补设封面（车图 11.jpg）→ 点「更新」→ og:image 生效。
 
 ## 七、核心规则（不可违反）
 
@@ -134,6 +150,10 @@ node scripts/zhihu_probe.js --edit-url "https://zhuanlan.zhihu.com/p/<ID>/edit"
 | 16 | `MODULE_NOT_FOUND`（node 找不到 playwright-core） | git-bash 下 `/c/Users/...` 被拼成 `c:\c\Users\...` | 用 `C:/Users/...` 风格路径；或设 `OPENCLAW_NODE_MODULES` 指向 `node_modules` 目录 |
 | 17 | 担心脚本退出会关掉浏览器 / 丢草稿 | 误以为 `browser.close()` 关闭实例 | `connectOverCDP` 的 `close()` 只断开连接；草稿由知乎自动保存 |
 | 18 | 旧脚本残留进程可能仍在打字 | 前一次卡死的子进程未随父进程退出 | 动新脚本前**采样两次 `bodyLen`**（间隔 3s）确认没有在增长 |
+| 19 | **多图（3 张）时段落乱序、最后一张插不进去**（2026-10-12） | 原实现「边输第 N 段边插第 N 张图」——插图插入的是独立 block，会打断后续段落的输入流；且光标位置随插图变化，锚点索引漂移 | **改为两阶段**：① 先把正文**全部**逐段输入完；② 再按锚点**倒序**（slot 大的先插）逐张插图。倒序可保证尚未处理的锚点索引不被新增 block 影响 |
+| 20 | 连插多张时第二张之后插到错误位置 | 插图后 DraftJS 光标漂移，沿用上次 selection 不可靠 | `insertAtSlot` 每张图前都用 `Range.selectNodeContents(block[N-1]); collapse(false)` **主动重设 selection**，不依赖遗留光标 |
+| 21 | 多图后如何确认都插上了 | 只看「有没有 img」会漏判少插 | 每张插完比对 `countImgs()`（`.DraftEditor-root img, [contenteditable=true] img`）**递增**；结尾若 `imgCount < 期望` 打印 WARN 并建议用 `--edit-url` 重跑 |
+| 22 | **多图时（编辑器里已有图）新图没插进去却被判「成功」→ 实际少插一张**（2026-10-12 实测） | `insertImageWithRetry` 的成功判据写成 **`n > 0`**——编辑器里只要已存在任意一张图，新图还没落进去就立刻 `return true`，误报成功 | 判据改为**相对插入前递增**：`insertAtSlot` 先 `countImgs()` 取 `before` 传给 `insertImageWithRetry`，判定 **`n > before`**；轮询放宽到 15×2s。修后实测 3 张图逐张 `img 0→1→2→3` 各 +1 |
 
 ## 九、文件结构
 

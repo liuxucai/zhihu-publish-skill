@@ -13,9 +13,14 @@
  *   --title-file <path>  标题文件（UTF-8，单行）
  *   --body <path>        纯正文文件：段间空一行，不含标题，不用 # 标记
  *
- * 可选：
- *   --image <path>       正文配图
- *   --image-at <N>       配图插在第 N 段之后（1-based）；有 --image 但不给则插在中间
+ * 可选（配图：默认 3 张，自动从素材库按「文章标签」挑选）：
+ *   --image <path>       正文配图；**可重复传多次**指定多张，覆盖自动挑选
+ *   --keyword <str>      自动挑图用的关键词（缺省用文章标题）
+ *   --tags "a,b"         文章标签（取自素材库 tag.txt；缺省按关键词自动推荐）
+ *   --image-top <N>      自动挑选张数（默认 3）
+ *   --image-layout <s>   spread（默认，均分到正文不同段落之间）| group（连续插在同一处）
+ *   --image-at <N>       group 模式锚点：插在第 N 段之后
+ *   --no-image           不配图
  *   --edit-url <url>     改为编辑已发布文章（https://zhuanlan.zhihu.com/p/<ID>/edit），
  *                        提交按钮自动识别为「更新」
  *   --publish            真正提交；不带则只填稿并截图，停在提交前
@@ -54,14 +59,18 @@ function parseArgs(argv) {
     const a = argv[i];
     if (!a.startsWith("--")) continue;
     const k = a.slice(2);
-    if (["publish", "dry-run", "help"].includes(k)) {
+    if (["publish", "dry-run", "help", "no-image"].includes(k)) {
       out[k] = true;
       continue;
     }
-    out[k] = argv[++i];
+    const v = argv[++i];
+    // --image 可重复传递：收集为数组（多张正文配图）
+    if (k === "image") { (out.image = out.image || []).push(v); continue; }
+    out[k] = v;
   }
   return out;
 }
+
 
 function loadPlaywright() {
   // 首选：公共解析器（不写死用户名 / 盘符 / 版本号）
@@ -160,19 +169,30 @@ async function main() {
     .trim();
   if (!TITLE) throw new Error("缺少 --title 或 --title-file");
   const PARAS = toParagraphs(readText(args.body, "--body"));
-  const IMAGE = args.image ? path.resolve(args.image) : null;
   const CDP = String(args.cdp || process.env.ISOB_CDP_PORT || "9222");
   const RESTORE_MS = Number(args["restore-ms"] || 4000);
   const PREVIEW = args.preview || path.join(__dirname, "zhihu_preview.png");
   const TARGET = args["edit-url"] || WRITE_URL;
   const DO_PUBLISH = !!args.publish && !args["dry-run"];
-  let imageAt = null;
-  if (IMAGE) {
-    imageAt = args["image-at"] ? Number(args["image-at"]) : Math.floor(PARAS.length / 2);
-    if (!fs.existsSync(IMAGE)) throw new Error(`配图不存在: ${IMAGE}`);
-    if (imageAt < 1 || imageAt > PARAS.length)
-      throw new Error(`--image-at 越界: ${imageAt}（共 ${PARAS.length} 段）`);
-  }
+
+  // 配图：显式 --image（可重复）优先；否则按「标签 → 素材库」自动挑 Top-N（默认 3 张）
+  const { planImages } = require(path.resolve(__dirname, "..", "..", "isolated-browser", "scripts", "post_images.js"));
+  const plan = planImages({
+    explicit: args.image,
+    noImage: args["no-image"],
+    keyword: args.keyword || TITLE,
+    tags: args.tags,
+    top: args["image-top"],
+    layout: args["image-layout"],
+    at: args["image-at"],
+    dir: args["image-dir"],
+    strategy: args["image-strategy"],
+    paraCount: PARAS.length,
+  });
+  const IMAGES = plan.images;
+  const SLOTS = plan.slots;
+  console.log(`[配图] ${IMAGES.length} 张（来源 ${plan.source} | 布局 ${plan.layout} | 锚点[${SLOTS.join(",") || "-"}]）`);
+  if (plan.detail) plan.detail.chosen.forEach((c, i) => console.log(`        ${i + 1}) 图${c.number} ${c.name || ""} → ${c.image}`));
 
   const { chromium } = loadPlaywright();
   const browser = await chromium.connectOverCDP(`http://127.0.0.1:${CDP}`);
@@ -211,20 +231,29 @@ async function main() {
   await page.keyboard.type(TITLE, { delay: 15 });
   await sleep(500);
 
-  console.log(`[4/8] 逐段输入正文（${PARAS.length} 段${IMAGE ? `，第 ${imageAt} 段后插图` : ""}）`);
+  console.log(`[4/8] 逐段输入正文（${PARAS.length} 段）`);
   for (let i = 0; i < PARAS.length; i++) {
     await editor.focus();
     await page.keyboard.type(PARAS[i], { delay: 10 });
     await sleep(350);
-    if (IMAGE && i + 1 === imageAt) {
-      await page.keyboard.press("End");
-      await sleep(200);
+    if (i < PARAS.length - 1) {
       await page.keyboard.press("Enter");
       await sleep(300);
-      await insertImageWithRetry(page, IMAGE, 3);
-    } else if (i < PARAS.length - 1) {
-      await page.keyboard.press("Enter");
-      await sleep(300);
+    }
+  }
+  await sleep(1500);
+
+  // 配图：正文全部就位后再插图（先文字后图片，避免图片块打乱文字流）。
+  // 按锚点**倒序**插入 —— 每插一张都会新增块，倒序可保证尚未处理的锚点索引不漂移。
+  if (IMAGES.length) {
+    console.log(`[4.5/8] 插入 ${IMAGES.length} 张配图（锚点：第 ${SLOTS.join("/")} 段之后）`);
+    const order = IMAGES.map((img, i) => ({ img, slot: SLOTS[i], i })).sort((a, b) => b.slot - a.slot);
+    for (const it of order) {
+      const before = await countImgs(page);
+      await insertAtSlot(page, it.slot, it.img, 3);
+      const after = await countImgs(page);
+      console.log(`  [图${it.i + 1}/${IMAGES.length}] 第${it.slot}段后 → img ${before}→${after} ${after > before ? "OK" : "FAIL"}`);
+      await sleep(800);
     }
   }
   await sleep(2000);
@@ -239,7 +268,9 @@ async function main() {
       `[WARN] 首块(${st.blocks[0]}) != 正文首段(${expectFirst}) —— 可能乱序，建议用 --edit-url 重跑`
     );
   }
-  if (IMAGE && st.imgCount === 0) console.warn("[WARN] 正文未检测到配图");
+  if (IMAGES.length && st.imgCount === 0) console.warn("[WARN] 正文未检测到配图");
+  else if (IMAGES.length && st.imgCount < IMAGES.length)
+    console.warn(`[WARN] 配图数 ${st.imgCount} < 期望 ${IMAGES.length}（可能有图未插入成功，建议用 --edit-url 重跑）`);
 
   console.log("[6/8] 截图");
   await page.screenshot({ path: PREVIEW });
@@ -270,8 +301,49 @@ async function main() {
   console.log("[OK] 发布/更新成功");
   return 0;
 
+  /** 统计正文真实图片数 */
+  async function countImgs(pg) {
+    return pg
+      .evaluate(() => document.querySelectorAll(".DraftEditor-root img, [contenteditable=true] img").length)
+      .catch(() => 0);
+  }
+
+  /**
+   * 把光标定位到「第 slotNo 段（1-based）」末尾 → Enter 造空段 → 在该处插图。
+   * 用 Range 主动设 selection，避免依赖上一次操作留下的光标（图片插入后光标常漂移）。
+   */
+  async function insertAtSlot(pg, slotNo, img, maxRetry) {
+    // ⭐ 记录插入前图数：成功判据必须是「比插入前多」，不能是 n>0（否则已有图时会误判）
+    const before = await countImgs(pg);
+    const set = await pg
+      .evaluate((n) => {
+        const blocks = [...document.querySelectorAll(".DraftEditor-root .public-DraftStyleDefault-block")];
+        const b = blocks[n - 1];
+        if (!b) return "NO_BLOCK(共" + blocks.length + "块)";
+        const ce = document.querySelector(".DraftEditor-root [contenteditable=true]");
+        const r = document.createRange();
+        r.selectNodeContents(b);
+        r.collapse(false);
+        const sel = window.getSelection();
+        sel.removeAllRanges();
+        sel.addRange(r);
+        if (ce) ce.focus();
+        return "OK len=" + (b.textContent || "").length;
+      }, slotNo)
+      .catch((e) => "ERR:" + e.message);
+    console.log(`      定位第${slotNo}段: ${set}`);
+    if (String(set).startsWith("NO_BLOCK") || String(set).startsWith("ERR")) return false;
+    await pg.keyboard.press("End");
+    await sleep(200);
+    await pg.keyboard.press("Enter");
+    await sleep(400);
+    return insertImageWithRetry(pg, img, maxRetry, before);
+  }
+
   // ---- 配图：上传 + 点「插入图片」确认键（缩略图出现后再等 3s）----
-  async function insertImageWithRetry(pg, img, maxRetry) {
+  // before = 插入前正文图数；成功判据为 img 数 **相对 before 递增**（多图时 n>0 会误判）
+  async function insertImageWithRetry(pg, img, maxRetry, before) {
+    before = before || 0;
     for (let attempt = 1; attempt <= maxRetry; attempt++) {
       console.log(`[图片] 尝试 ${attempt}/${maxRetry}`);
       await pg.evaluate(() =>
@@ -307,15 +379,11 @@ async function main() {
         await sleep(1000);
         continue;
       }
-      for (let k = 0; k < 10; k++) {
+      for (let k = 0; k < 15; k++) {
         await sleep(2000);
-        const n = await pg.evaluate(
-          () =>
-            document.querySelectorAll(".DraftEditor-root img, [contenteditable=true] img")
-              .length
-        );
-        if (n > 0) {
-          console.log(`[图片] 成功，正文 img 数=${n}`);
+        const n = await countImgs(pg);
+        if (n > before) {
+          console.log(`[图片] 成功，正文 img 数=${n}（+${n - before}）`);
           return true;
         }
       }

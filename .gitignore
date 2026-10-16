@@ -1,0 +1,10 @@
+# 知乎运行产物不入库
+scripts/zhihu_preview.png
+scripts/*.png
+*.log
+node_modules/
+
+# 工作区
+.workspace/
+**/.workspace/
+*.tmp

@@ -1,0 +1,13 @@
+2.2.0
+2026-10-13 封面能力：
+- 实测封面全流程：编辑页「添加封面」→ `input.UploadPicture-input` setInputFiles（单选、无确认弹窗）
+  → 点「更新」→ 公开页 og:image 生效；已发布文章可补设。
+- SKILL.md 新增「封面设置」一节（含 file input 区分与核验口径）。
+
+2.1.0
+2026-10-12 多图静默丢失修复：
+- `scripts/zhihu_publish_pw.js`：`insertImageWithRetry` 的成功判据由 `n>0` 改为「相对插入前 before 递增」，
+  修掉「编辑器里已有图时，第 3 张未插入却被误判成功」的 bug；轮询放宽到 15×2s。
+- 实测：2026-10-12 发布 https://zhuanlan.zhihu.com/p/2093043735680632461 ，
+  3 张配图逐张 +1（img 0→1→2→3），13 段正文结构正确。
+- SKILL.md 第八节踩坑清单新增第 22 条。
